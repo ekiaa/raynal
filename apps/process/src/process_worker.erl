@@ -6,7 +6,7 @@
 
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
 
--export([start/0, start_link/0, set_neighbor/2, set_neighbors/2]).
+-export([start/0, start_link/0, set_neighbor/2, set_neighbors/2, get_state/1]).
 
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl").
@@ -16,6 +16,8 @@
 	'raynal_state' := raynal:state(),
 	'neighbors_set' := raynal:neighbors()
 }.
+
+-export_type([state/0]).
 
 %===============================================================================
 % API functions
@@ -32,6 +34,11 @@ set_neighbor(Pid, Neighbor) ->
 
 set_neighbors(Pid, Neighbors) ->
 	gen_server:cast(Pid, {neighbors, Neighbors}).
+
+-spec get_state(pid()) -> raynal:state().
+
+get_state(Pid) ->
+	gen_server:call(Pid, get_state).
 
 %===============================================================================
 % gen_server callbacks
@@ -52,6 +59,9 @@ init(Args) ->
 	{stop, error_msg({nomatch, ?MODULE, ?LINE, Args})}.
 
 %===============================================================================
+
+handle_call(get_state, _, #{raynal_state := RaynalState} = State) ->
+	{reply, RaynalState, State};
 
 handle_call(Request, From, State) ->
 	lager:error("[handle_call] nomatch From: ~p; Request: ~p", [From, Request]),

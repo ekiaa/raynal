@@ -1,50 +1,9 @@
 -module(process).
 
-% -export([generate/0, generate/1, start/1, start/2, start/3, broadcast/1]).
--export([generate/0, generate/1, clean/0, get_random/0]).
+-export([generate/0, generate/1, clean/0, get_random/0, get_state/0, print_state/0]).
 
 -define(DEFAULT_NUMBER_OF_PROCESSES, 10).
 -define(DEFAULT_NUMBER_OF_NEIGHBORS, 2).
-
-% start(BehaviourFun) ->
-% 	start(BehaviourFun, undefined).
-
-% start(BehaviourFun, BehaviourState) ->
-% 	DefaultOptions = #{
-% 		process_amount => ?DEFAULT_NUMBER_OF_PROCESSES,
-% 		neighbor_amount => ?DEFAULT_NUMBER_OF_NEIGHBORS
-% 	},
-% 	start(BehaviourFun, BehaviourState, DefaultOptions).
-
-% start(BehaviourFun, BehaviourState, Options) when is_function(BehaviourFun, 3), is_map(Options) ->
-% 	case application:ensure_started(?MODULE) of
-% 		ok ->
-% 			terminate_processes(),
-% 			generate_processes(Options),
-% 			set_behaviour(BehaviourFun, BehaviourState);
-% 		{error, Reason} ->
-% 			lager:debug("Reason: ~p", [Reason])
-% 	end.
-
-% set_behaviour(BehaviourFun, BehaviourState) when is_function(BehaviourFun, 3) ->
-% 	lists:foreach(
-% 		fun(Pid) -> 
-% 			process_worker:set_behaviour(Pid, BehaviourFun, BehaviourState) 
-% 		end, 
-% 		get_processes()
-% 	).
-
-% broadcast(Start) when is_function(Start, 1) ->
-% 	case get_processes() of
-% 		[] ->
-% 			{error, no_processes};
-% 		Processes ->
-% 			PN = length(Processes),
-% 			RN = rand:uniform(PN),
-% 			Pid = lists:nth(RN, Processes),
-% 			Start(Pid),
-% 			ok
-% 	end.
 
 -type options() :: #{
 	process_amount := pos_integer(),
@@ -99,6 +58,22 @@ get_random() ->
  			Pid = lists:nth(RN, Processes),
  			{ok, Pid}
 	end.
+
+%===============================================================================
+
+-spec get_state() -> list(raynal:state()).
+
+get_state() ->
+	[{Pid, process_worker:get_state(Pid)} || Pid <- get_processes()].
+
+%===============================================================================
+
+-spec print_state() -> ok.
+
+print_state() ->
+	StateList = get_state(),
+	io:format("~p~n", [StateList]),
+	ok.
 
 %===============================================================================
 % Internal functions

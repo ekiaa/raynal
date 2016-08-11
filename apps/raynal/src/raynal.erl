@@ -1,12 +1,12 @@
 -module(raynal).
 
--export([init_state/0, set_process_state/2, parallel_traversal/1, build_bfst/2, handle_msg/3, send_message/4]).
+-export([init_state/0, set_process_state/2, traversal/2, build/3, handle_msg/3, send_message/4]).
 
 -type neighbors() :: sets:set(pid()).
--type algorithm() :: rst_flood | bfst.
+-type algorithm() :: rst | bfst.
 -type key() :: atom() | binary() | string().
 -type message() :: {raynal, {algorithm(), {key(), term()}}}.
--type internal_state() :: bfst:state() | rst_flood:state().
+-type internal_state() :: bfst:state() | rst:state().
 
 -type algorithm_handle_msg_result() :: ok
 									 | {internal, internal_state()}
@@ -21,7 +21,7 @@
 -export_type([neighbors/0, state/0, message/0]).
 -export_type([key/0, internal_state/0, algorithm_handle_msg_result/0]).
 
--define(BUILD_BFST_TIMEOUT, 30000).
+-define(BUILD_TIMEOUT, 30000).
 
 %===============================================================================
 % API functions
@@ -45,24 +45,24 @@ set_process_state(RaynalState, ProcessState) ->
 
 %===============================================================================
 
--spec parallel_traversal(pid()) -> ok.
+-spec traversal(pid(), fun()) -> ok.
 
-parallel_traversal(ProcessPid) ->
+traversal(ProcessPid, Fun) ->
 	ok.
 
 %===============================================================================
 
--spec build_bfst(ProcessPid :: pid(), Key :: key()) -> ok | {error, term()}.
+-spec build(Algorithm :: algorithm(), ProcessPid :: pid(), Key :: key()) -> ok | {error, term()}.
 
-build_bfst(ProcessPid, Key) when is_pid(ProcessPid) ->
-	lager:debug("~p try build bfst for ~p with key ~p", [self(), ProcessPid, Key]),
-	send_message(ProcessPid, bfst, Key, {'START', self()}),
+build(Algorithm, ProcessPid, Key) when is_pid(ProcessPid) ->
+	lager:debug("~p try build ~p for ~p with key ~p", [self(), Algorithm, ProcessPid, Key]),
+	send_message(ProcessPid, Algorithm, Key, {'START', self()}),
 	receive
-		{raynal, {bfst, {Key, {'RESULT', Result}}}} ->
+		{raynal, {Algorithm, {Key, {'RESULT', Result}}}} ->
 			lager:debug("~p receive result: ~p", [self(), Result]),
 			ok
 	after
-		?BUILD_BFST_TIMEOUT ->
+		?BUILD_TIMEOUT ->
 			{error, timeout}
 	end.
 
@@ -76,13 +76,7 @@ build_bfst(ProcessPid, Key) when is_pid(ProcessPid) ->
 
 handle_msg({raynal, {Algorithm, {Key, Message}}}, Neighbors, #{process_state := ProcessState} = RaynalState) ->
 	State = maps:get(Key, RaynalState, undefined),
-	Result = case Algorithm of
-		bfst ->
-			bfst:handle_msg(Key, Message, Neighbors, State, ProcessState);
-		rst_flood ->
-			rst_flood:handle_msg(Key, Message, Neighbors, State, ProcessState)
-	end,
-	case Result of
+	case Algorithm:handle_msg(Key, Message, Neighbors, State, ProcessState) of
 		ok ->
 			RaynalState;
 		{internal, NewState} ->
