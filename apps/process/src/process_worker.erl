@@ -6,11 +6,16 @@
 
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
 
--export([start/0, start_link/0, set_neighbor/2, set_neighbors/2, set_behaviour/3]).
+-export([start/0, start_link/0, set_neighbor/2, set_neighbors/2]).
 
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl").
 -endif.
+
+-type state() :: #{
+	'raynal_state' := raynal:state(),
+	'neighbors_set' := raynal:neighbors()
+}.
 
 %===============================================================================
 % API functions
@@ -28,30 +33,29 @@ set_neighbor(Pid, Neighbor) ->
 set_neighbors(Pid, Neighbors) ->
 	gen_server:cast(Pid, {neighbors, Neighbors}).
 
-set_behaviour(Pid, BehaviourFun, BehaviourState) ->
-	gen_server:cast(Pid, {set_behaviour, BehaviourFun, BehaviourState}).
-
 %===============================================================================
 % gen_server callbacks
 %===============================================================================
 
+-spec init([]) -> {'ok', state()}.
+
 init([]) ->
 	lager:debug("Start ~p", [self()]),
+	RaynalState = raynal:init_state(),
 	{ok, #{
-		neighbors_set => [],
-		behaviour_fun => undefined,
-		behaviour_state => undefined
+		neighbors_set => sets:new(),
+		raynal_state => RaynalState
 	}};
 
 init(Args) ->
 	lager:error("[init] nomatch Args: ~p", [Args]),
-	error({nomatch, ?MODULE, ?LINE, Args}).
+	{stop, error_msg({nomatch, ?MODULE, ?LINE, Args})}.
 
 %===============================================================================
 
 handle_call(Request, From, State) ->
 	lager:error("[handle_call] nomatch From: ~p; Request: ~p", [From, Request]),
-	Error = error({nomatch, ?MODULE, ?LINE, {From, Request}}),
+	Error = error_msg({nomatch, ?MODULE, ?LINE, {From, Request}}),
 	{stop, Error, Error, State}.
 
 %===============================================================================
@@ -67,33 +71,23 @@ handle_cast({neighbors, Neighbors}, State) when is_list(Neighbors) ->
 	lists:foreach(fun(Pid) -> set_neighbor(Pid, self()) end, NList),
 	{noreply, State#{neighbors_set => NeighborsSet}};
 
-handle_cast({set_behaviour, BehaviourFun, BehaviourState}, State) when is_function(BehaviourFun, 3) ->
-	lager:debug("~p set process behaviour", [self()]),
-	{noreply, State#{
-		behaviour_fun => BehaviourFun,
-		behaviour_state => BehaviourState
-	}};
-
 handle_cast(Message, State) ->
 	lager:error("[handle_cast] nomatch Message: ~p", [Message]),
-	{stop, error({nomatch, ?MODULE, ?LINE, Message}), State}.
+	{stop, error_msg({nomatch, ?MODULE, ?LINE, Message}), State}.
 
 %===============================================================================
 
-handle_info(Message,
+-spec handle_info(RaynalMessage :: raynal:message(), State :: state()) -> {'noreply', state()}.
+
+handle_info({raynal, _} = RaynalMessage, 
 	#{
-		neighbors_set := NeighborsSet,
-		behaviour_state := BehaviourState,
-		behaviour_fun := BehaviourFun
+		raynal_state := RaynalState,
+		neighbors_set := Neighbors
 	} = State
-) when is_function(BehaviourFun, 3) ->
-	lager:debug("~p process message: ~p", [self(), Message]),
-	case BehaviourFun(Message, NeighborsSet, BehaviourState) of
-		ok ->
-			{noreply, State};
-		{ok, NewBehaviourState} ->
-			{noreply, State#{behaviour_state => NewBehaviourState}}
-	end;
+) ->
+	{noreply, State#{
+		raynal_state => raynal:handle_msg(RaynalMessage, Neighbors, RaynalState)
+	}};
 
 handle_info(Message, State) ->
 	lager:debug("~p not have process behaviour; Message: ~p", [self(), Message]),
@@ -120,6 +114,6 @@ code_change(OldVsn, State, Extra) ->
 
 %===============================================================================
 
-error({error, Reason}) -> {error, Reason};
-error({'EXIT', Reason}) -> {error, {'EXIT', Reason, erlang:get_stacktrace()}};
-error(Reason) -> {error, Reason}.
+-spec error_msg(Reason :: any()) -> {'error', any()}.
+
+error_msg(Reason) -> {error, Reason}.
