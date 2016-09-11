@@ -87,7 +87,7 @@ handle_cast(Message, State) ->
 
 %===============================================================================
 
--spec handle_info(RaynalMessage :: raynal:message(), State :: state()) -> {'noreply', state()}.
+-spec handle_info(RaynalMessage :: raynal:tagged_message(), State :: state()) -> {'noreply', state()}.
 
 handle_info({raynal, _} = RaynalMessage, 
 	#{

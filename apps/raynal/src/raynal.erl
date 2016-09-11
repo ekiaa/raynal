@@ -1,25 +1,62 @@
 -module(raynal).
 
--export([init_state/0, set_process_state/2, traversal/2, build/3, handle_msg/3, send_message/4]).
+-export([
+	init_state/0,
+	set_process_state/2,
+	traverse/4,
+	build/3,
+	handle_msg/3,
+	send_message/3,
+	send_message/5
+]).
 
--type neighbors() :: sets:set(pid()).
+-type command() :: build | traverse.
+-type process() :: pid().
 -type algorithm() :: rst | bfst.
 -type key() :: atom() | binary() | string().
--type message() :: {raynal, {algorithm(), {key(), term()}}}.
--type internal_state() :: bfst:state() | rst:state().
+-type message() ::  
+	#{
+		command := command(),
+		from := process(),
+		key := key(),
+		algorithm := algorithm(),
+		message := term()
+	}.
+-type tagged_message() :: {raynal, message()}.
+
+-type neighbors() :: sets:set(pid()).
+
+-type algorithm_state() :: undefined | bfst:state() | rst:state().
+-type process_state() :: term().
+-type traverse_result() :: term().
 
 -type algorithm_handle_msg_result() :: ok
-									 | {internal, internal_state()}
-									 | {external, term()}
-									 | {ok, internal_state(), term()}.
+									 | {ok, {algorithm, algorithm_state()}}
+									 | {ok, {process, process_state()}}
+									 | {ok, algorithm_state(), process_state()}.
 
+-type algorithm_map() :: #{
+	algorithm() => algorithm_state()
+}.
 -type state() :: #{
-	process_state := term(),
-	key() => internal_state()
+	process_state := process_state(),
+	key() => algorithm_map()
 }.
 
--export_type([neighbors/0, state/0, message/0]).
--export_type([key/0, internal_state/0, algorithm_handle_msg_result/0]).
+-export_type([
+	command/0,
+	process/0,
+	algorithm/0,
+	key/0,
+	message/0,
+	tagged_message/0,
+	neighbors/0,
+	algorithm_state/0,
+	state/0,
+	algorithm_handle_msg_result/0,
+	process_state/0,
+	traverse_result/0
+]).
 
 -define(BUILD_TIMEOUT, 30000).
 
@@ -36,7 +73,7 @@ init_state() ->
 
 %===============================================================================
 
--spec set_process_state(RaynalState :: state(), ProcessState :: term()) -> state().
+-spec set_process_state(RaynalState :: state(), ProcessState :: process_state()) -> state().
 
 set_process_state(RaynalState, ProcessState) ->
 	RaynalState#{
@@ -45,20 +82,38 @@ set_process_state(RaynalState, ProcessState) ->
 
 %===============================================================================
 
--spec traversal(pid(), fun()) -> ok.
+-spec traverse(
+	Algorithm :: algorithm(),
+	ProcessPid :: process(),
+	Key :: key(),
+	CallbackModule :: atom()
+) -> {ok, term()} | {error, term()}.
 
-traversal(ProcessPid, Fun) ->
-	ok.
+traverse(Algorithm, ProcessPid, Key, CallbackModule) when is_pid(ProcessPid), is_atom(CallbackModule) ->
+	lager:debug("~p try traverse from root ~p with callback module ~p", [self(), ProcessPid, CallbackModule]),
+	send_message(ProcessPid, traverse, Key, Algorithm, {'START', CallbackModule}),
+	receive
+		{raynal, #{algorithm := Algorithm, key := Key, message := {'RESULT', Result}}} ->
+			lager:debug("~p receive result: ~p", [self(), Result]),
+			{ok, Result}
+	after
+		?BUILD_TIMEOUT ->
+			{error, timeout}
+	end.
 
 %===============================================================================
 
--spec build(Algorithm :: algorithm(), ProcessPid :: pid(), Key :: key()) -> ok | {error, term()}.
+-spec build(
+	Algorithm :: algorithm(),
+	ProcessPid :: process(),
+	Key :: key()
+) -> ok | {error, term()}.
 
 build(Algorithm, ProcessPid, Key) when is_pid(ProcessPid) ->
 	lager:debug("~p try build ~p for ~p with key ~p", [self(), Algorithm, ProcessPid, Key]),
-	send_message(ProcessPid, Algorithm, Key, {'START', self()}),
+	send_message(ProcessPid, build, Key, Algorithm, 'START'),
 	receive
-		{raynal, {Algorithm, {Key, {'RESULT', Result}}}} ->
+		{raynal, #{algorithm := Algorithm, key := Key, message := {'RESULT', Result}}} ->
 			lager:debug("~p receive result: ~p", [self(), Result]),
 			ok
 	after
@@ -69,36 +124,66 @@ build(Algorithm, ProcessPid, Key) when is_pid(ProcessPid) ->
 %===============================================================================
 
 -spec handle_msg(
-	Message :: message(),
+	Message :: tagged_message(),
 	Neighbors :: neighbors(),
 	RaynalState :: state()
 ) -> state().
 
-handle_msg({raynal, {Algorithm, {Key, Message}}}, Neighbors, #{process_state := ProcessState} = RaynalState) ->
-	State = maps:get(Key, RaynalState, undefined),
-	case Algorithm:handle_msg(Key, Message, Neighbors, State, ProcessState) of
+handle_msg({raynal, #{algorithm := Algorithm} = Message}, Neighbors, #{process_state := ProcessState} = RaynalState) ->
+	AlgorithmState = get_algorithm_state(Message, RaynalState),
+	case Algorithm:handle_msg(Message, Neighbors, AlgorithmState, ProcessState) of
 		ok ->
 			RaynalState;
-		{internal, NewState} ->
-			RaynalState#{Key => NewState};
-		{external, NewProcessState} ->
+		{ok, {algorithm, NewAlgorithmState}} ->
+			put_algorithm_state(Message, RaynalState, NewAlgorithmState);
+		{ok, {process, NewProcessState}} ->
 			RaynalState#{process_state => NewProcessState};
-		{ok, NewState, NewProcessState} ->
-			RaynalState#{Key => NewState, process_state => NewProcessState}
+		{ok, NewAlgorithmState, NewProcessState} ->
+			put_algorithm_state(Message, RaynalState#{process_state => NewProcessState}, NewAlgorithmState)
 	end.
 
 %===============================================================================
 
 -spec send_message(
-	ProcessPid :: pid(),
-	Algorithm :: algorithm(),
+	ProcessPid :: process(),
+	Command :: command(),
 	Key :: key(),
-	Message :: term()
-) -> message().
+	Algorithm :: algorithm(),
+	SentMessage :: term()
+) -> tagged_message().
 
-send_message(ProcessPid, Algorithm, Key, Message) ->
-	ProcessPid ! {raynal, {Algorithm, {Key, Message}}}.
+send_message(ProcessPid, Command, Key, Algorithm, SentMessage) ->
+	ProcessPid ! {raynal, #{command => Command, from => self(), key => Key, algorithm => Algorithm, message => SentMessage}}.
+
+-spec send_message(
+	ProcessPid :: process(),
+	SentMessage :: term(),
+	PreviousMessage :: message()
+) -> tagged_message().
+
+send_message(ProcessPid, SentMessage, PreviousMessage) ->
+	ProcessPid ! {raynal, PreviousMessage#{from => self(), message => SentMessage}}.
 
 %===============================================================================
 % Internal functions
 %===============================================================================
+
+-spec get_algorithm_state(message(), state()) -> algorithm_state().
+
+get_algorithm_state(#{key := Key, algorithm := Algorithm}, RaynalState) ->
+	case maps:get(Key, RaynalState, undefined) of
+		undefined ->
+			undefined;
+		AlgorithmMap ->
+			maps:get(Algorithm, AlgorithmMap, undefined)
+	end.
+
+-spec put_algorithm_state(message(), state(), algorithm_state()) -> state().
+
+put_algorithm_state(#{key := Key, algorithm := Algorithm}, RaynalState, AlgorithmState) ->
+	case maps:get(Key, RaynalState, undefined) of
+		undefined ->
+			RaynalState#{Key => #{Algorithm => AlgorithmState}};
+		AlgorithmMap ->
+			RaynalState#{Key => AlgorithmMap#{Algorithm => AlgorithmState}}
+	end.

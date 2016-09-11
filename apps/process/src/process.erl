@@ -42,7 +42,8 @@ generate(Options) ->
 -spec clean() -> ok.
 
 clean() ->
-	process_worker_sup:terminate_all_child(get_processes()).
+	process_worker_sup:terminate_all_child(get_processes()),
+	application:set_env(?MODULE, processes, []).
 
 %===============================================================================
 
@@ -61,7 +62,7 @@ get_random() ->
 
 %===============================================================================
 
--spec get_state() -> list(raynal:state()).
+-spec get_state() -> list({pid(), raynal:state()}).
 
 get_state() ->
 	[{Pid, process_worker:get_state(Pid)} || Pid <- get_processes()].
