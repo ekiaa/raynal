@@ -5,12 +5,13 @@
 	set_process_state/2,
 	traverse/4,
 	build/3,
+	clean/3,
 	handle_msg/3,
 	send_message/3,
 	send_message/5
 ]).
 
--type command() :: build | traverse.
+-type command() :: build | traverse | clean.
 -type process() :: pid().
 -type algorithm() :: rst | bfst.
 -type key() :: atom() | binary() | string().
@@ -123,6 +124,19 @@ build(Algorithm, ProcessPid, Key) when is_pid(ProcessPid) ->
 
 %===============================================================================
 
+-spec clean(
+	Algorithm :: algorithm(),
+	ProcessPid :: process(),
+	Key :: key()
+) -> ok.
+
+clean(Algorithm, ProcessPid, Key) when is_pid(ProcessPid) ->
+	lager:debug("~p try clean ~p for ~p with key ~p", [self(), Algorithm, ProcessPid, Key]),
+	send_message(ProcessPid, clean, Key, Algorithm, 'CLEAN'),
+	ok.
+
+%===============================================================================
+
 -spec handle_msg(
 	Message :: tagged_message(),
 	Neighbors :: neighbors(),
@@ -139,7 +153,9 @@ handle_msg({raynal, #{algorithm := Algorithm} = Message}, Neighbors, #{process_s
 		{ok, {process, NewProcessState}} ->
 			RaynalState#{process_state => NewProcessState};
 		{ok, NewAlgorithmState, NewProcessState} ->
-			put_algorithm_state(Message, RaynalState#{process_state => NewProcessState}, NewAlgorithmState)
+			put_algorithm_state(Message, RaynalState#{process_state => NewProcessState}, NewAlgorithmState);
+		clean ->
+			clean_algorithm_state(Message, RaynalState)
 	end.
 
 %===============================================================================
@@ -186,4 +202,20 @@ put_algorithm_state(#{key := Key, algorithm := Algorithm}, RaynalState, Algorith
 			RaynalState#{Key => #{Algorithm => AlgorithmState}};
 		AlgorithmMap ->
 			RaynalState#{Key => AlgorithmMap#{Algorithm => AlgorithmState}}
+	end.
+
+-spec clean_algorithm_state(message(), state()) -> state().
+
+clean_algorithm_state(#{key := Key, algorithm := Algorithm}, RaynalState) ->
+	case maps:get(Key, RaynalState, undefined) of
+		undefined ->
+			RaynalState;
+		AlgorithmMap ->
+			NewAlgorithmMap = maps:remove(Algorithm, AlgorithmMap),
+			case maps:size(NewAlgorithmMap) of
+				0 ->
+					maps:remove(Key, RaynalState);
+				_ ->
+					RaynalState#{Key => NewAlgorithmMap}
+			end
 	end.

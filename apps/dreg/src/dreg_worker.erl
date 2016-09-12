@@ -3,11 +3,13 @@
 -behaviour(gen_statem).
 
 -type name() :: atom().
--type state() :: idle.
+-type key() :: binary().
+-type state() :: idle | building.
 -type data() :: #{
-	name := name(),
-	neighbors_set := sets:set(),
-	raynal_state := raynal:state()
+	name => name(),
+	neighbors_set => sets:set(),
+	raynal_state => raynal:state(),
+	key => key()
 }.
 
 -export_type([name/0]).
@@ -55,10 +57,12 @@ add_neighbor(Name, Neighbor) when is_pid(Neighbor) ->
 init({name, Name}) ->
 	State = idle,
 	RaynalState = raynal:init_state(),
+	Key = get_key(Name),
 	Data = #{
 		name => Name,
 		neighbors_set => sets:new(),
-		raynal_state => RaynalState
+		raynal_state => RaynalState,
+		key => Key
 	},
 	{handle_event_function, State, Data}.
 
@@ -69,18 +73,61 @@ init({name, Name}) ->
 	EventContent :: term(),
 	State :: state(),
 	Data :: data()
-) -> keep_state_and_data | {keep_state, data()}.
+) -> 
+	  keep_state_and_data 
+	| {keep_state, data()}
+	| {keep_state_and_data, {postpone, true}}
+	| {next_state, state(), data()}.
 
-handle_event(cast, {add_neighbor, Neighbor}, _State, _Data) ->
+%-------------------------------------------------------------------------------
+
+handle_event(cast, {add_neighbor, Neighbor}, idle, _Data) ->
 	Neighbor ! {set_neighbor, first, self()},
 	keep_state_and_data;
 
-handle_event(info, {set_neighbor, first, Neighbor}, State, Data) ->
-	Neighbor ! {set_neighbor, second, self()},
-	set_neighbor(Neighbor, State, Data);
+handle_event(cast, {add_neighbor, _}, _State, _Data) ->
+	{keep_state_and_data, {postpone, true}};
 
-handle_event(info, {set_neighbor, second, Neighbor}, State, Data) ->
-	set_neighbor(Neighbor, State, Data);
+handle_event(info, {set_neighbor, first, Neighbor}, _State, Data) ->
+	Neighbor ! {set_neighbor, second, self()},
+	#{neighbors_set := Neighbors} = Data,
+	lager:debug("[~p] (first) add neighbor: ~p", [_State, Neighbor]),
+	{keep_state, Data#{neighbors_set => sets:add_element(Neighbor, Neighbors)}};
+
+handle_event(info, {set_neighbor, second, Neighbor}, idle = _State, Data) ->
+	#{neighbors_set := Neighbors, name := Name, key := OldKey} = Data,
+	lager:debug("[~p] (second) add neighbor: ~p", [_State, Neighbor]),
+	Self = self(),
+	NewKey = get_key(Name),
+	spawn(fun() ->
+		raynal:clean(rst, Self, OldKey),
+		raynal:build(rst, Self, NewKey),
+		Self ! {raynal, building_stop}
+	end),
+	lager:debug("[~p] run raynal:build(bfst)", [_State]),
+	{next_state, building, 
+		Data#{
+			neighbors_set => sets:add_element(Neighbor, Neighbors),
+			key => NewKey
+		}
+	};
+
+handle_event(info, {set_neighbor, second, _}, _State, _Data) ->
+	{keep_state_and_data, {postpone, true}};
+
+%-------------------------------------------------------------------------------
+
+handle_event(info, {raynal, building_stop} = Message, building = _State, Data) ->
+	lager:debug("[~p] receive: ~p", [_State, Message]),
+	{next_state, idle, Data};
+
+handle_event(info, {raynal, _} = RaynalMessage, _State, Data) ->
+	#{raynal_state := RaynalState, neighbors_set := Neighbors} = Data,
+	{keep_state, Data#{
+		raynal_state => raynal:handle_msg(RaynalMessage, Neighbors, RaynalState)
+	}};
+
+%-------------------------------------------------------------------------------
 
 handle_event(_EventType, _EventContent, _State, _Data) ->
 	lager:debug("[~p] not matched event: ~p", [_State, _EventContent]),
@@ -101,14 +148,7 @@ code_change(_Vsn, State, Data, _Extra) ->
 % Internal functions
 %===============================================================================
 
--spec set_neighbor(Neighbor :: pid(), State :: state(), Data :: data()) -> keep_state_and_data | {keep_state, data()}.
+-spec get_key(name()) -> key().
 
-set_neighbor(Neighbor, _State, #{neighbors_set := Neighbors} = Data) ->
-	case sets:is_element(Neighbor, Neighbors) of
-		false ->
-			lager:debug("[~p] add neighbor: ~p", [_State, Neighbor]),
-			{keep_state, Data#{neighbors_set => sets:add_element(Neighbor, Neighbors)}};
-		true ->
-			lager:debug("[~p] ~p already is neighbor", [_State, Neighbor]),
-			keep_state_and_data
-	end.
+get_key(Name) ->
+	<<(atom_to_binary(Name, utf8))/binary, "-", (integer_to_binary(erlang:unique_integer([positive])))/binary>>.

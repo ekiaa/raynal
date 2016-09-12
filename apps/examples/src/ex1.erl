@@ -5,6 +5,7 @@
 -export([run/0, execute/1, merge/3]).
 
 run() ->
+	lager:debug("Run example #1"),
 	lager:info("Clean processes"),
 	process:clean(),
 	lager:info("Generate processes"),

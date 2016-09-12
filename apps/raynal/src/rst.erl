@@ -37,7 +37,10 @@ handle_msg(#{command := build} = Message, Neighbors, State, ProcessState) ->
 	build(Message, Neighbors, State, ProcessState);
 
 handle_msg(#{command := traverse} = Message, Neighbors, State, ProcessState) ->
-	traverse(Message, Neighbors, State, ProcessState).
+	traverse(Message, Neighbors, State, ProcessState);
+
+handle_msg(#{command := clean} = Message, Neighbors, State, ProcessState) ->
+	clean(Message, Neighbors, State, ProcessState).
 
 %===============================================================================
 % Internal functions
@@ -151,3 +154,14 @@ traverse(
 		_ ->
 			{ok, State#{expected_msg => NewN, result => NewResult}, NewProcessState}
 	end.
+
+%===============================================================================
+
+clean(
+	#{message := 'CLEAN'} = Message,
+	_Neighbors,
+	#{children := Children} = _State,
+	_ProcessState
+) ->
+	lists:foreach(fun(Pid) -> raynal:send_message(Pid, 'CLEAN', Message) end, Children),
+	clean.

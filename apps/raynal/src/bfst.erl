@@ -48,7 +48,7 @@ build(
 ) ->
 	lager:debug("~p START; ReplyTo: ~p", [self(), ReplyTo]),
 	raynal:send_message(self(), {'GO', -1}, Message),
-	{ok, {algorithm, State#{reply_to => ReplyTo}}};
+	{ok, {algorithm, State#{reply_to => ReplyTo, level => undefined}}};
 
 build(
 	#{message := {'GO', D}, from := From} = Message,
