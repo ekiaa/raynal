@@ -20,7 +20,9 @@
 %%====================================================================
 
 start_link() ->
-    supervisor:start_link({local, ?SERVER}, ?MODULE, []).
+	supervisor:start_link({local, ?SERVER}, ?MODULE, []).
+
+-spec start_child(Args :: list()) -> supervisor:startchild_ret().
 
 start_child(Args) ->
 	supervisor:start_child(?SERVER, Args).
@@ -31,9 +33,9 @@ start_child(Args) ->
 
 %% Child :: {Id,StartFunc,Restart,Shutdown,Type,Modules}
 init([]) ->
-    {ok, {{simple_one_for_one, 0, 1}, [
-    	{dreg_worker, {dreg_worker, start_link, []}, transient, 1000, worker, [dreg_worker]}
-    ]}}.
+	{ok, {{simple_one_for_one, 0, 1}, [
+		{dreg_worker, {dreg_worker, start_link, []}, transient, 1000, worker, [dreg_worker]}
+	]}}.
 
 %%====================================================================
 %% Internal functions
