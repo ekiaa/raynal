@@ -114,34 +114,43 @@ build(
 
 %===============================================================================
 
+-spec traverse(
+	Message :: raynal:message(raynal_traverse:message()),
+	Neighbors :: raynal:neighbors(),
+	RaynalState :: raynal:state(),
+	ProcessState :: raynal:process_state()
+) -> raynal:algorithm_handle_msg_result().
+
 traverse(
-	#{message := {'START', CallbackModule}} = Message,
+	#{message := #{command := 'START'} = MethodMessage} = Message,
 	_Neighbors,
-	#{parent := Parent, children := Children, reply_to := ReplyTo, result := undefined} = State,
+	#{parent := Parent, children := Children, result := undefined} = State,
 	ProcessState
 ) ->
+	#{ref := Ref, callback := CallbackModule, reply_to := ReplyTo, params := Params} = MethodMessage,
 	N = erlang:length(Children),
-	{NewResult, NewProcessState} = CallbackModule:execute(ProcessState),
+	{NewResult, NewProcessState} = CallbackModule:execute(Params, ProcessState),
 	case N of
 		0 ->
 			case ReplyTo of
-				undefined -> raynal:send_message(Parent, {'BACK', NewResult, CallbackModule}, Message);
-				_ -> raynal:send_message(ReplyTo, {'RESULT', NewResult}, Message)
+				undefined -> raynal_traverse:send_message(Parent, Message, {'BACK', NewResult});
+				_ -> ReplyTo ! {raynal, {'RESULT', NewResult}, Message)
 			end,
 			{ok, {process, NewProcessState}};
 		_ ->
 			lists:foreach(
-				fun(Pid) -> raynal:send_message(Pid, {'START', CallbackModule}, Message) end,
+				fun(Pid) -> raynal_traverse:send_message(Pid, Message, 'START') end,
 				Children),
 			{ok, State#{expected_msg => N, result => NewResult}, NewProcessState}
 	end;
 
 traverse(
-	#{message := {'BACK', ChildResult, CallbackModule}} = Message,
+	#{message := #{command := {'BACK', ChildResult}} = MethodMessage} = Message,
 	_Neighbors,
-	#{parent := Parent, expected_msg := N, reply_to := ReplyTo, result := Result} = State,
+	#{parent := Parent, expected_msg := N, result := Result} = State,
 	ProcessState
 ) ->
+	#{ref := Ref, callback := CallbackModule, reply_to := ReplyTo, params := Params} = MethodMessage,
 	NewN = N - 1,
 	{NewResult, NewProcessState} = CallbackModule:merge(ProcessState, Result, ChildResult),
 	case NewN of

@@ -8,58 +8,161 @@
 	clean/3,
 	handle_msg/3,
 	send_message/3,
-	send_message/5
+	send_message/5,
+	get_message/4,
+	get_message/2,
+	get_method_message/1
 ]).
 
--type command() :: build | traverse | clean.
 -type process() :: pid().
--type algorithm() :: rst | bfst.
 -type key() :: atom() | binary() | string().
+-type neighbors() :: sets:set(pid()).
+-type process_state() :: term().
+% -type traverse_result() :: term().
+
+-type method() :: 
+	  raynal_build:method() 
+	| raynal_traverse:method() 
+	| raynal_clean:method().
+-type method_message() ::
+	  raynal_build:message()
+	| raynal_traverse:message()
+	| raynal_clean:message().
+-type method_state() ::
+	  raynal_build:state()
+	| raynal_traverse:state()
+	| raynal_clean:state().
+
+-type algorithm() :: 
+	  raynal_rst:algorithm()
+	| raynal_bfst:algorithm().
+-type algorithm_state() :: 
+	  raynal_rst:state()
+	| raynal_bfst:state().
+
 -type message() ::  
 	#{
-		command := command(),
+		method := method(),
 		from := process(),
 		key := key(),
 		algorithm := algorithm(),
-		message := term()
+		message := method_message()
 	}.
 -type tagged_message() :: {raynal, message()}.
 
--type neighbors() :: sets:set(pid()).
+-type algorithm_handle_msg_result() :: 
+	  ok
+	| {ok, {algorithm, algorithm_state()}}
+	| {ok, {process, process_state()}}
+	| {ok, algorithm_state(), process_state()}.
 
--type algorithm_state() :: undefined | bfst:state() | rst:state().
--type process_state() :: term().
--type traverse_result() :: term().
+-type algorithm_state_map() :: 
+	#{
+		algorithm() => algorithm_state()
+	}.
+-type method_state_map() :: 
+	#{
+		reference() => method_state()
+	}.
+-type key_map() :: 
+	#{
+		key() => algorithm_state_map()
+	}.
 
--type algorithm_handle_msg_result() :: ok
-									 | {ok, {algorithm, algorithm_state()}}
-									 | {ok, {process, process_state()}}
-									 | {ok, algorithm_state(), process_state()}.
-
--type algorithm_map() :: #{
-	algorithm() => algorithm_state()
-}.
--type state() :: #{
-	process_state := process_state(),
-	key() => algorithm_map()
-}.
+-type state() :: 
+	#{
+		process_state := process_state(),
+		method_state_map := method_state_map(),
+		key_map := key_map()
+	}.
 
 -export_type([
-	command/0,
+	method/0,
 	process/0,
 	algorithm/0,
 	key/0,
-	message/0,
-	tagged_message/0,
+	message/1,
+	tagged_message/1,
 	neighbors/0,
 	algorithm_state/0,
 	state/0,
 	algorithm_handle_msg_result/0,
-	process_state/0,
-	traverse_result/0
+	process_state/0
+	% ,
+	% traverse_result/0
 ]).
 
 -define(BUILD_TIMEOUT, 30000).
+
+%===============================================================================
+% Type functions
+%===============================================================================
+
+-spec message(
+	Method :: method(),
+	Key :: key(),
+	Algorithm :: algorithm(),
+	MethodMessage :: method_message()
+) -> message().
+
+message(Method, Key, Algorithm, MethodMessage) ->
+	#{
+		method => Method,
+		from => self(),
+		key => Key,
+		algorithm => Algorithm,
+		message => MethodMessage
+	}.
+
+-spec message(
+	PreviousMessage :: message(),
+	MethodMessage :: method_message()
+) -> message().
+
+message(PreviousMessage, MethodMessage) ->
+	PreviousMessage#{
+		from => self(),
+		message => MethodMessage
+	}.
+
+%-------------------------------------------------------------------------------
+
+-spec tagged_message(
+	Message :: message()
+) -> tagged_message().
+
+tagged_message(Message) ->
+	{raynal, Message}.
+
+%-------------------------------------------------------------------------------
+
+-spec state(
+	ProcessState :: process_state(),
+	MethodStateMap :: method_state_map(),
+	KeyMap :: key_map()
+) -> state().
+
+state(
+	{process_state, _} = ProcessState,
+	{method_state_map, _} = MethodStateMap,
+	{key_map, _} = KeyMap
+) ->
+	#{
+		process_state => ProcessState,
+		method_state_map => MethodStateMap,
+		key_map => KeyMap
+	}.
+
+-spec state(ProcessState :: process_state(), State :: state()) -> state()
+		;  (MethodStateMap :: method_state_map(), State :: state()) -> state()
+		;  (KeyMap :: key_map(), State :: state()) -> state().
+
+state({process_state, _} = ProcessState, State) ->
+	State#{process_state => ProcessState};
+state({method_state_map, _} = MethodStateMap, State) ->
+	State#{method_state_map => MethodStateMap};
+state({key_map, _} = KeyMap, State) ->
+	State#{key_map => KeyMap}.
 
 %===============================================================================
 % API functions
@@ -84,23 +187,18 @@ set_process_state(RaynalState, ProcessState) ->
 %===============================================================================
 
 -spec traverse(
-	Algorithm :: algorithm(),
 	ProcessPid :: process(),
 	Key :: key(),
-	CallbackModule :: atom()
-) -> {ok, term()} | {error, term()}.
+	Algorithm :: algorithm(),
+	CallbackModule :: atom(),
+	Params :: term()
+) -> reference().
 
-traverse(Algorithm, ProcessPid, Key, CallbackModule) when is_pid(ProcessPid), is_atom(CallbackModule) ->
+traverse(ProcessPid, Key, Algorithm, CallbackModule, Params) when is_pid(ProcessPid), is_atom(CallbackModule) ->
 	lager:debug("~p try traverse from root ~p with callback module ~p", [self(), ProcessPid, CallbackModule]),
-	send_message(ProcessPid, traverse, Key, Algorithm, {'START', CallbackModule}),
-	receive
-		{raynal, #{algorithm := Algorithm, key := Key, message := {'RESULT', Result}}} ->
-			lager:debug("~p receive result: ~p", [self(), Result]),
-			{ok, Result}
-	after
-		?BUILD_TIMEOUT ->
-			{error, timeout}
-	end.
+	Ref = erlang:make_ref(),
+	raynal_traverse:send_message(ProcessPid, Key, Algorithm, Ref, CallbackModule, self(), Params, 'START'),
+	Ref.
 
 %===============================================================================
 
@@ -162,23 +260,30 @@ handle_msg({raynal, #{algorithm := Algorithm} = Message}, Neighbors, #{process_s
 
 -spec send_message(
 	ProcessPid :: process(),
-	Command :: command(),
+	Method :: method(),
 	Key :: key(),
 	Algorithm :: algorithm(),
-	SentMessage :: term()
-) -> tagged_message().
+	MethodMessage :: MethodMessageType
+) -> ok.
 
-send_message(ProcessPid, Command, Key, Algorithm, SentMessage) ->
-	ProcessPid ! {raynal, #{command => Command, from => self(), key => Key, algorithm => Algorithm, message => SentMessage}}.
+send_message(ProcessPid, Method, Key, Algorithm, MethodMessage) ->
+	ProcessPid ! get_message(Method, Key, Algorithm, MethodMessage).
 
 -spec send_message(
 	ProcessPid :: process(),
-	SentMessage :: term(),
-	PreviousMessage :: message()
-) -> tagged_message().
+	PreviousMessage :: message(_),
+	MethodMessage :: MethodMessageType
+) -> tagged_message(MethodMessageType).
 
-send_message(ProcessPid, SentMessage, PreviousMessage) ->
-	ProcessPid ! {raynal, PreviousMessage#{from => self(), message => SentMessage}}.
+send_message(ProcessPid, PreviousMessage, MethodMessage) ->
+	ProcessPid ! get_message(PreviousMessage, MethodMessage).
+
+%-------------------------------------------------------------------------------
+
+-spec get_method_message(Message :: message(MethodMessageType)) -> MethodMessageType.
+
+get_method_message(#{message := MethodMessage}) ->
+	MethodMessage.
 
 %===============================================================================
 % Internal functions

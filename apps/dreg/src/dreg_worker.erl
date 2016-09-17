@@ -102,9 +102,9 @@ handle_event(info, {set_neighbor, second, Neighbor}, idle = _State, Data) ->
 	spawn(fun() ->
 		raynal:clean(rst, Self, OldKey),
 		raynal:build(rst, Self, NewKey),
-		Self ! {raynal, building_stop}
+		Self ! building_stop
 	end),
-	lager:debug("[~p] run raynal:build(bfst)", [_State]),
+	lager:debug("[~p] run raynal:build(rst)", [_State]),
 	{next_state, building, 
 		Data#{
 			neighbors_set => sets:add_element(Neighbor, Neighbors),
@@ -117,15 +117,49 @@ handle_event(info, {set_neighbor, second, _}, _State, _Data) ->
 
 %-------------------------------------------------------------------------------
 
-handle_event(info, {raynal, building_stop} = Message, building = _State, Data) ->
+handle_event(info, building_stop = Message, building = _State, Data) ->
+	lager:debug("[~p] receive: ~p", [_State, Message]),
+	#{key := Key} = Data,
+	Self = self(),
+	spawn(fun() ->
+		Res = raynal:traverse(rst, Self, Key, dreg_worker_building_traverse),
+		Self ! {traverse, Res}
+	end),
+	keep_state_and_data;
+
+handle_event(info, {traverse, Result} = Message, building = _State, Data) ->
 	lager:debug("[~p] receive: ~p", [_State, Message]),
 	{next_state, idle, Data};
 
 handle_event(info, {raynal, _} = RaynalMessage, _State, Data) ->
+	lager:debug("[~p] receive: ~p", [_State, RaynalMessage]),
 	#{raynal_state := RaynalState, neighbors_set := Neighbors} = Data,
 	{keep_state, Data#{
 		raynal_state => raynal:handle_msg(RaynalMessage, Neighbors, RaynalState)
 	}};
+
+%-------------------------------------------------------------------------------
+
+handle_event(info, rebuild, idle = _State, Data) ->
+	lager:debug("[~p] rebuild tree", [_State]),
+	#{neighbors_set := Neighbors, name := Name, key := OldKey} = Data,
+	Self = self(),
+	NewKey = get_key(Name),
+	spawn(fun() ->
+		raynal:clean(rst, Self, OldKey),
+		raynal:build(rst, Self, NewKey),
+		Self ! rebuild_stop
+	end),
+	lager:debug("[~p] run raynal:build(rst)", [_State]),
+	{next_state, building, 
+		Data#{
+			key => NewKey
+		}
+	};
+
+handle_event(info, rebuild_stop, building = _State, Data) ->
+	lager:debug("[~p] rebuild tree stop", [_State]),
+	{next_state, idle, Data};
 
 %-------------------------------------------------------------------------------
 
@@ -136,7 +170,7 @@ handle_event(_EventType, _EventContent, _State, _Data) ->
 %===============================================================================
 
 terminate(_Reason, _State, _Data) ->
-	lager:debug("[~p] terminated: ~p", [_State, _Reason]),
+	lager:debug("[~p] terminated: ~p~n~p", [_State, _Reason, erlang:get_stacktrace()]),
 	ok.
 
 %===============================================================================
